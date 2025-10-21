@@ -1,0 +1,17 @@
+# Ignore virtual environments
+/.venv
+venv/
+.venv
+
+# Ignore any (py)caches
+/__pycache__
+__pycache__/
+__cache__/
+
+# Ignore config files
+config.py
+
+# Temporarily ignore test files (TODO: delete)
+api.py
+frontend.ts
+service.py
