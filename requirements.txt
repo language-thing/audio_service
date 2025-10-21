@@ -1,2 +1,3 @@
 pymemcache==4.0.0
-speechbrain==
+speechbrain==1.0.3
+soundfile==0.13.1

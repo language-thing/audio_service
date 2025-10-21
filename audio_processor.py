@@ -1,8 +1,13 @@
 from pymemcache.client.base import Client
 from speechbrain.inference import EncoderClassifier
 
+import soundfile as sf
+import torchaudio
 import config
+import base64
+import torch
 import time
+import io
 
 
 def _connect_cache() -> Client | None:
@@ -31,6 +36,35 @@ def _load_model() -> EncoderClassifier | None:
         return None
 
 
+def _process_audio(model: EncoderClassifier, audio_data: str, language_iso: str) -> float:
+    try:
+        decoded_audio = base64.b64decode(audio_data)
+        buffer = io.BytesIO(decoded_audio)
+
+        signal, fs = sf.read(buffer, dtype="float32") # ASSUMES WAV FORMAT
+        signal = torch.from_numpy(signal).unsqueeze(0)
+
+    except Exception as e:
+        print(f"Error reading audio data: {e}")
+        return 0.0
+    
+    if fs != 16000:
+        resampler = torchaudio.transforms.Resample(orig_freq=fs, new_freq=16000)
+        signal = resampler(signal)
+
+    model.eval()
+    with torch.no_grad():
+        out_prob, _, __, ___ = model.classify_batch(signal)
+
+    probabilities = out_prob[0]
+    lang_index = model.hparams.label_encoder.get_ind_from_label(language_iso)
+    target_lang_probs = probabilities[:, lang_index]
+
+    confident_frames = torch.sum(target_lang_probs > config.CONFIDENCE_THRESHOLD).item()
+    frame_duration_sec = 0.02
+
+    return confident_frames * frame_duration_sec
+
 
 def main_loop() -> None:
     """
@@ -45,7 +79,7 @@ def main_loop() -> None:
     model = _load_model()
     if not model: return
 
-    print("Audio processing started, Polling for tasks...")
+    print("Audio processing started, polling for tasks...")
 
     task_id = 0 # TODO: WHAT IF SERVICES OUT OF SYNC
     while True:
@@ -59,10 +93,9 @@ def main_loop() -> None:
             time.sleep(0.5)
             continue
         
-        duration = process_audio(
+        duration = _process_audio(
             model=model,
             audio_data=audio,
-            sample_rate=task.get("sample_rate"),
             language_iso=task.get("language")
         )
 
@@ -76,9 +109,6 @@ def main_loop() -> None:
         cache.delete(f"A:{task_id}")
 
         task_id += 1
-
-
-
 
 
 if __name__ == "__main__":
