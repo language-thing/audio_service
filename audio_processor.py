@@ -1,3 +1,6 @@
+import os
+os.environ['TORCHAUDIO_BACKEND'] = 'soundfile'
+
 from pymemcache.client.base import Client
 from speechbrain.inference import EncoderClassifier
 
@@ -99,11 +102,13 @@ def main_loop() -> None:
             language_iso=task.get("language")
         )
 
-        user_id, goal_id = f"P:{task.get("user_id")}", f"P:{task.get("goal_id")}"
+        user_key, goal_id = f"P:{task.get("user_id")}", task.get("goal_id")
 
-        progress: dict = cache.get(f"P:{user_id}", {})
+        progress: dict = cache.get(user_key, {})
         progress[goal_id] = progress.get(goal_id, 0) + duration
-        cache.set(f"P:{user_id}", progress, expire=0)
+        cache.set(user_key, progress, expire=0)
+
+        print(progress)
 
         cache.delete(f"AT:{task_id}")
         cache.delete(f"A:{task_id}")
