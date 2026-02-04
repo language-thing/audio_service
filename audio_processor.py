@@ -6,10 +6,12 @@ import whisper
 import base64
 import orjson
 import math
+import time
 import io
 
 
 CONFIDENCE_THRESHOLD = 0.6
+WINDOW_SIZE = 50
 MULTIPLIER = 3
 
 # or "medium" if on VPS
@@ -65,13 +67,27 @@ _TEST()
 
 
 while True:
+    cache.set("worker:status", "idle")
+
     result = cache.brpop("tasks", timeout=0) # type: ignore
     if not result: continue
+
+    cache.set("worker:status", "working")
 
     _, task_data = result # type: ignore
     task: dict = orjson.loads(task_data)
 
+    start_time = time.perf_counter()
     duration = _process_audio(model, task["d"], task["l"])
-    if duration == 0: continue
+    process_time = time.perf_counter() - start_time
 
-    cache.incrby(f"p:{task['u']}", math.ceil(duration))
+    cache.lpush("stats:processing_times", process_time)
+    cache.ltrim("stats:processing_times", 0, WINDOW_SIZE - 1)
+
+    cache.incr("stats:total_tasks")
+    if duration > 0:
+        cache.incr("stats:successful_tasks")
+        cache.incrby(f"p:{task['u']}", math.ceil(duration))
+        
+    else:
+        cache.incr("stats:skipped_tasks")
