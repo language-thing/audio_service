@@ -1,1 +1,4 @@
-openai-whisper==20250625
+soundfile==0.13.1
+redis==7.1.0
+orjson==3.11.4
+whisper-openai==1.0.0

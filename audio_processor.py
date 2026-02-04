@@ -1,120 +1,77 @@
-import os
-os.environ['TORCHAUDIO_BACKEND'] = 'soundfile'
-
-from pymemcache.client.base import Client
-from speechbrain.inference import EncoderClassifier
+from redis import Redis
 
 import soundfile as sf
-import torchaudio
-import config
+
+import whisper
 import base64
-import torch
-import time
+import orjson
+import math
 import io
 
 
-def _connect_cache() -> Client | None:
-    cache = Client(config.MEMCACHED_SERVER)
+CONFIDENCE_THRESHOLD = 0.6
+MULTIPLIER = 3
 
+# or "medium" if on VPS
+model = whisper.load_model("small")
+cache = Redis(decode_responses=True)
+
+
+def _process_audio(model, audio_data: str, language_iso: str) -> float:
     try:
-        cache.set("audio_processor", "connected", expire=0)
-
-        print("Connected to Memcached.")
-        return cache
-    
-    except Exception as e:
-        print(f"Error connecting to Memcached: {e}")
-        return None
-    
-
-def _load_model() -> EncoderClassifier | None:
-    try:
-        model = EncoderClassifier.from_hparams(source=config.MODEL_NAME, run_opts={"device": config.DEVICE})
-
-        print("Model loaded successfully.")
-        return model
-
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        return None
-
-
-def _process_audio(model: EncoderClassifier, audio_data: str, language_iso: str) -> float:
-    try:
+        # Decode base64 → buffer → waveform
         decoded_audio = base64.b64decode(audio_data)
         buffer = io.BytesIO(decoded_audio)
 
-        signal, fs = sf.read(buffer, dtype="float32") # ASSUMES WAV FORMAT
-        signal = torch.from_numpy(signal).unsqueeze(0)
+        # Load and resample if needed
+        signal, fs = sf.read(buffer, dtype="float32")
+
+        # Convert to log-mel spectrogram
+        audio = whisper.pad_or_trim(signal)
+        mel = whisper.log_mel_spectrogram(audio).to(model.device)
+
+        # Detect language
+        _, probs = model.detect_language(mel)
+        top_lang, top_prob = max(probs.items(), key=lambda x: x[1])
+
+        # Logging / debug
+        print(f"Top detected language: {top_lang} ({top_prob:.3f})")
+        print(f"Expected: {language_iso} ({probs.get(language_iso, 0.0):.3f})")
+
+        # Check expected language probability
+        target_prob = probs.get(language_iso, 0.0)
+
+        if target_prob >= CONFIDENCE_THRESHOLD:
+            print("Confident detection")
+            duration_sec = len(signal) / 16000
+            return float(duration_sec) * MULTIPLIER
+        
+        else:
+            print("Not confident")
+            return 0.0
 
     except Exception as e:
-        print(f"Error reading audio data: {e}")
+        print(f"Error reading or processing audio: {e}")
         return 0.0
-    
-    if fs != 16000:
-        resampler = torchaudio.transforms.Resample(orig_freq=fs, new_freq=16000)
-        signal = resampler(signal)
-
-    model.eval()
-    with torch.no_grad():
-        out_prob, _, __, ___ = model.classify_batch(signal)
-
-    probabilities = out_prob[0]
-    lang_index = model.hparams.label_encoder.get_ind_from_label(language_iso)
-    target_lang_probs = probabilities[:, lang_index]
-
-    confident_frames = torch.sum(target_lang_probs > config.CONFIDENCE_THRESHOLD).item()
-    frame_duration_sec = 0.02
-
-    return confident_frames * frame_duration_sec
 
 
-def main_loop() -> None:
-    """
-    A = AUDIO
-    AT = AUDIO_TASK
-    P = PROGRESS
-    """
+def _TEST():
+    with open("result_speech_only.wav", "rb") as file:
+        file_data = file.read()
+        b64_data = base64.b64encode(file_data).decode("utf-8")  # base64 as string
+        print(_process_audio(model, b64_data, "nl"))
 
-    cache = _connect_cache()
-    if not cache: return
-
-    model = _load_model()
-    if not model: return
-
-    print("Audio processing started, polling for tasks...")
-
-    task_id = 0 # TODO: WHAT IF SERVICES OUT OF SYNC
-    while True:
-        task: dict | None = cache.get(f"AT:{task_id}")
-        if not task:
-            time.sleep(0.5)
-            continue
-
-        audio: str | None = cache.get(f"A:{task_id}")
-        if not audio:
-            time.sleep(0.5)
-            continue
-        
-        duration = _process_audio(
-            model=model,
-            audio_data=audio,
-            language_iso=task.get("language")
-        )
-
-        user_key, goal_id = f"P:{task.get("user_id")}", task.get("goal_id")
-
-        progress: dict = cache.get(user_key, {})
-        progress[goal_id] = progress.get(goal_id, 0) + duration
-        cache.set(user_key, progress, expire=0)
-
-        print(progress)
-
-        cache.delete(f"AT:{task_id}")
-        cache.delete(f"A:{task_id}")
-
-        task_id += 1
+_TEST()
 
 
-if __name__ == "__main__":
-    main_loop()
+while True:
+    result = cache.brpop("tasks", timeout=0) # type: ignore
+    if not result: continue
+
+    _, task_data = result # type: ignore
+    task: dict = orjson.loads(task_data)
+
+    duration = _process_audio(model, task["d"], task["l"])
+    if duration == 0: continue
+
+    cache.incrby(f"p:{task['u']}", math.ceil(duration))
