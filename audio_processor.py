@@ -16,7 +16,9 @@ MODEL = "small"
 # or "medium" if on VPS
 print("[PROCESSING] loading " + MODEL)
 model = whisper.load_model(MODEL)
+
 cache = Redis(decode_responses=True)
+audio_cache = Redis(decode_responses=False)
 
 
 def _process_audio(model, audio_data: bytes, language_iso: str) -> float:
@@ -68,7 +70,9 @@ while True:
 
     _, task_raw = result # type: ignore
     task: dict = orjson.loads(task_raw)
-    data: bytes = cache.get(task["k"]) # type: ignore
+
+    data: bytes = audio_cache.get(task["k"]) # type: ignore
+    audio_cache.delete(task["k"])
 
     start_time = time.perf_counter()
     duration = _process_audio(model, data, task["l"])
