@@ -66,11 +66,12 @@ while True:
 
     cache.set("worker:status", "working")
 
-    _, task_data = result # type: ignore
-    task: dict = orjson.loads(task_data)
+    _, task_raw = result # type: ignore
+    task: dict = orjson.loads(task_raw)
+    data: bytes = cache.get(task["k"]) # type: ignore
 
     start_time = time.perf_counter()
-    duration = _process_audio(model, task["d"], task["l"])
+    duration = _process_audio(model, data, task["l"])
     process_time = time.perf_counter() - start_time
 
     cache.lpush("stats:processing_times", process_time)
