@@ -13,9 +13,11 @@ import io
 CONFIDENCE_THRESHOLD = 0.6
 WINDOW_SIZE = 50
 MULTIPLIER = 3
+MODEL = "small"
 
 # or "medium" if on VPS
-model = whisper.load_model("small")
+print("[PROCESSING] loading " + MODEL)
+model = whisper.load_model(MODEL)
 cache = Redis(decode_responses=True)
 
 
@@ -64,6 +66,9 @@ def _TEST():
         print(_process_audio(model, b64_data, "nl"))
 
 _TEST()
+
+
+print("[PROCESSING] STARTED working on queue")
 
 
 while True:
