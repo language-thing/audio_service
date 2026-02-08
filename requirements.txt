@@ -1,4 +1,4 @@
-soundfile==0.13.1
+librosa==0.11.0
 redis==7.1.0
 orjson==3.11.4
 whisper-openai==1.0.0

@@ -1,9 +1,7 @@
 from redis import Redis
 
-import soundfile as sf
-
 import whisper
-import base64
+import librosa
 import orjson
 import math
 import time
@@ -21,14 +19,12 @@ model = whisper.load_model(MODEL)
 cache = Redis(decode_responses=True)
 
 
-def _process_audio(model, audio_data: str, language_iso: str) -> float:
+def _process_audio(model, audio_data: bytes, language_iso: str) -> float:
     try:
-        # Decode base64 → buffer → waveform
-        decoded_audio = base64.b64decode(audio_data)
-        buffer = io.BytesIO(decoded_audio)
+        buffer = io.BytesIO(audio_data)
 
         # Load and resample if needed
-        signal, fs = sf.read(buffer, dtype="float32")
+        signal, fs = librosa.load(buffer, sr=16000)
 
         # Convert to log-mel spectrogram
         audio = whisper.pad_or_trim(signal)
@@ -57,15 +53,6 @@ def _process_audio(model, audio_data: str, language_iso: str) -> float:
     except Exception as e:
         print(f"Error reading or processing audio: {e}")
         return 0.0
-
-
-def _TEST():
-    with open("result_speech_only.wav", "rb") as file:
-        file_data = file.read()
-        b64_data = base64.b64encode(file_data).decode("utf-8")  # base64 as string
-        print(_process_audio(model, b64_data, "nl"))
-
-_TEST()
 
 
 print("[PROCESSING] STARTED working on queue")
