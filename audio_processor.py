@@ -1,11 +1,11 @@
 from redis import Redis
 
+import numpy as np
 import whisper
-import librosa
+import ffmpeg
 import orjson
 import math
 import time
-import io
 
 
 CONFIDENCE_THRESHOLD = 0.6
@@ -23,13 +23,16 @@ audio_cache = Redis(decode_responses=False)
 
 def _process_audio(model, audio_data: bytes, language_iso: str) -> float:
     try:
-        buffer = io.BytesIO(audio_data)
+        out, _ = (
+            ffmpeg.input("pipe:0")
+            .output("pipe:1", format="f32le", acodec="pcm_f32le", ac=1, ar=16000)
+            .run(input=audio_data, capture_stdout=True, capture_stderr=True, quiet=True)
+        )
 
-        # Load and resample if needed
-        signal, fs = librosa.load(buffer, sr=16000)
+        audio_np = np.frombuffer(out, np.float32)
 
         # Convert to log-mel spectrogram
-        audio = whisper.pad_or_trim(signal)
+        audio = whisper.pad_or_trim(audio_np)
         mel = whisper.log_mel_spectrogram(audio).to(model.device)
 
         # Detect language
@@ -45,7 +48,7 @@ def _process_audio(model, audio_data: bytes, language_iso: str) -> float:
 
         if target_prob >= CONFIDENCE_THRESHOLD:
             print("Confident detection")
-            duration_sec = len(signal) / 16000
+            duration_sec = len(audio_np) / 16000
             return float(duration_sec) * MULTIPLIER
         
         else:
