@@ -9,9 +9,9 @@ import math
 import time
 
 
-CONFIDENCE_THRESHOLD = 0.75
+CONFIDENCE_THRESHOLD = 0.5
 WINDOW_SIZE = 50
-MULTIPLIER = 3
+MULTIPLIER = 2
 
 
 class AccentRobustDetector:
@@ -68,6 +68,11 @@ class AccentRobustDetector:
                 if conf >= CONFIDENCE_THRESHOLD:
                     return (len(audio_np) / 16000) * MULTIPLIER
             
+            return 0.0
+        
+        except ffmpeg.Error as e:
+            # This will print the actual FFmpeg log (e.g., "Invalid data found when processing input")
+            print(f"FFmpeg Stderr: {e.stderr.decode()}")
             return 0.0
             
         except Exception as e:
