@@ -2,14 +2,13 @@ from transformers import Wav2Vec2ForSequenceClassification, AutoFeatureExtractor
 from redis import Redis
 
 import numpy as np
-import ffmpeg
 import orjson
 import torch
 import math
 import time
 
 
-CONFIDENCE_THRESHOLD = 0.5
+CONFIDENCE_THRESHOLD = 0.45
 WINDOW_SIZE = 50
 MULTIPLIER = 2
 
@@ -20,29 +19,52 @@ class AccentRobustDetector:
         self.processor = AutoFeatureExtractor.from_pretrained(model_id)
         self.model = Wav2Vec2ForSequenceClassification.from_pretrained(model_id)
         self.model.eval()
-        
+
+        self.vad_model, utils = torch.hub.load(
+            repo_or_dir='snakers4/silero-vad',
+            model='silero_vad',
+            force_reload=False
+        )
+        self.get_speech_timestamps = utils[0]
+
         if torch.cuda.is_available():
             self.model = self.model.cuda()
             print("[DETECTOR] Using GPU")
         else:
             print("[DETECTOR] Using CPU")
-    
+
+    def remove_silence(self, audio_np: np.ndarray) -> np.ndarray:
+        """Uses Silero VAD to strip out all non-speech segments."""
+        audio_tensor = torch.from_numpy(audio_np)
+        speech_timestamps = self.get_speech_timestamps(
+            audio_tensor,
+            self.vad_model,
+            sampling_rate=16000
+        )
+
+        if not speech_timestamps:
+            return np.array([], dtype=np.float32)
+
+        speech_segments = [audio_np[ts['start']:ts['end']] for ts in speech_timestamps]
+        return np.concatenate(speech_segments)
+
     def process_audio(self, audio_data: bytes, language_iso3: str) -> float:
         """Returns True if language detected, False otherwise"""
         try:
-            # FFmpeg conversion
-            out, _ = (
-                ffmpeg.input("pipe:0")
-                .output("pipe:1", format="f32le", acodec="pcm_f32le", ac=1, ar=16000)
-                .run(input=audio_data, capture_stdout=True, capture_stderr=True, quiet=True)
-            )
-            
-            audio_np = np.frombuffer(out, np.float32)
-            
+            audio_np = np.frombuffer(audio_data, dtype=np.float32).copy()
+
+            if len(audio_np) == 0:
+                return 0.0
+
+            audio_np = self.remove_silence(audio_np)
+            if len(audio_np) < 8000:
+                print("Skipping: Not enough speech detected.")
+                return 0.0
+
             # Process with MMS-LID
             inputs = self.processor(
-                audio_np, 
-                sampling_rate=16000, 
+                audio_np,
+                sampling_rate=16000,
                 return_tensors="pt",
                 padding=True
             )
@@ -54,7 +76,7 @@ class AccentRobustDetector:
                 logits = self.model(**inputs).logits
                 probs = torch.softmax(logits, dim=-1)[0]
 
-            top_probs, top_indices = torch.topk(probs, k=3)
+            top_probs, top_indices = torch.topk(probs, k=5)
             top_langs = [self.model.config.id2label[i.item()] for i in top_indices]
     
             print(f"Top Predictions: {list(zip(top_langs, top_probs.tolist()))}")
@@ -69,12 +91,7 @@ class AccentRobustDetector:
                     return (len(audio_np) / 16000) * MULTIPLIER
             
             return 0.0
-        
-        except ffmpeg.Error as e:
-            # This will print the actual FFmpeg log (e.g., "Invalid data found when processing input")
-            print(f"FFmpeg Stderr: {e.stderr.decode()}")
-            return 0.0
-            
+
         except Exception as e:
             print(f"Error processing audio: {e}")
             return 0.0
